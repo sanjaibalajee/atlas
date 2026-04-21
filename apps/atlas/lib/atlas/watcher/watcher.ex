@@ -97,9 +97,16 @@ defmodule Atlas.Watcher do
   # would miss longest-prefix location matching and create duplicate
   # projection rows. Strip the `/private` prefix so every path the log and
   # broadcaster see matches the location path the user typed.
+  #
+  # Match directory boundaries precisely: `/private/tmp` exactly, or
+  # `/private/tmp/` followed by any suffix. Without the trailing-slash
+  # discipline, the clause would also rewrite unrelated paths like
+  # `/private/tmpfoo` → `/tmpfoo`.
   @doc false
   @spec normalize(String.t()) :: String.t()
-  def normalize("/private/tmp" <> rest), do: "/tmp" <> rest
-  def normalize("/private/var" <> rest), do: "/var" <> rest
+  def normalize("/private/tmp"), do: "/tmp"
+  def normalize("/private/tmp/" <> rest), do: "/tmp/" <> rest
+  def normalize("/private/var"), do: "/var"
+  def normalize("/private/var/" <> rest), do: "/var/" <> rest
   def normalize(path), do: path
 end

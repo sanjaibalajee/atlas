@@ -3,8 +3,9 @@ defmodule Atlas.Repo.Migrations.AddIgnorePatternsToLocations do
 
   def change do
     # Stored as JSON text because SQLite has no native array type.
-    # The schema casts to `{:array, :string}` via Ecto.Type, with `[]`
-    # as the default (no patterns = index everything, current behavior).
+    # `Atlas.Schemas.Location` declares this field as `Atlas.Schemas.JsonList`
+    # — a custom Ecto.Type that round-trips `[String.t()]` through JSON — with
+    # an empty list as the default (no patterns = index everything).
     alter table(:locations) do
       add :ignore_patterns, :text, default: "[]", null: false
     end

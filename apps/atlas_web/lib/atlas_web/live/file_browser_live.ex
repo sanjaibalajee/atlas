@@ -107,17 +107,37 @@ defmodule AtlasWeb.FileBrowserLive do
   end
 
   defp apply_action(socket, :file_detail, params) do
-    socket
-    |> switch_location(params)
-    |> assign(:selected, Library.get_file(String.to_integer(params["file_id"])))
+    socket = switch_location(socket, params)
+
+    case parse_id(params["file_id"]) do
+      {:ok, id} ->
+        assign(socket, :selected, Library.get_file(id))
+
+      :error ->
+        socket
+        |> put_flash(:error, "Invalid file id.")
+        |> assign(:selected, nil)
+    end
   end
 
   # --- Location switch ---
   # Strict order: unsubscribe → reset stream → reassign → subscribe → reload.
+  # Malformed ids fall through to the :index-style empty state + flash so a
+  # bad URL never crashes the LiveView.
 
   defp switch_location(socket, %{"location_id" => id_str}) do
-    id = String.to_integer(id_str)
+    case parse_id(id_str) do
+      :error ->
+        socket
+        |> put_flash(:error, "Invalid location id.")
+        |> apply_action(:index, %{})
 
+      {:ok, id} ->
+        switch_to_location(socket, id)
+    end
+  end
+
+  defp switch_to_location(socket, id) do
     if socket.assigns.location_id == id do
       # Already on this location — just refresh stats (e.g., after a
       # LocationScanCompleted broadcast patched us).
@@ -161,6 +181,21 @@ defmodule AtlasWeb.FileBrowserLive do
 
     socket
   end
+
+  # --- Safe id parsing ---
+
+  # URL params are strings; LiveView must survive garbage. Accepts only
+  # "42" (exact integer, no trailing junk).
+  defp parse_id(nil), do: :error
+
+  defp parse_id(str) when is_binary(str) do
+    case Integer.parse(str) do
+      {id, ""} when id >= 0 -> {:ok, id}
+      _ -> :error
+    end
+  end
+
+  defp parse_id(_), do: :error
 
   # --- View / sort / order parsing ---
 
@@ -410,34 +445,40 @@ defmodule AtlasWeb.FileBrowserLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <div class="min-h-screen flex">
-      <aside class="w-64 shrink-0 border-r border-base-300 bg-base-100 p-4 overflow-y-auto">
-        <div class="font-semibold text-lg mb-4">Atlas</div>
-        <.sidebar_locations locations={@locations} current_id={@location_id} />
-      </aside>
+    <Layouts.app flash={@flash}>
+      <div class="min-h-screen flex" id="file-browser-root">
+        <aside class="w-64 shrink-0 border-r border-base-300 bg-base-100 p-4 overflow-y-auto">
+          <div class="font-semibold text-lg mb-4">Atlas</div>
+          <.sidebar_locations locations={@locations} current_id={@location_id} />
+        </aside>
 
-      <main class="flex-1 p-6 overflow-y-auto">
-        <%= cond do %>
-          <% @locations == [] -> %>
-            <.empty_state />
-          <% @location_id == nil -> %>
-            <.pick_location_hint />
-          <% true -> %>
-            <.location_pane
-              location={@location}
-              stats={@stats}
-              view={@view}
-              sort={@sort}
-              order={@order}
-              pending_new={@pending_new}
-              eol?={@eol?}
-              streams={@streams}
-            />
-        <% end %>
-      </main>
-    </div>
+        <main class="flex-1 p-6 overflow-y-auto">
+          <%= cond do %>
+            <% @locations == [] -> %>
+              <.empty_state />
+            <% @location_id == nil -> %>
+              <.pick_location_hint />
+            <% true -> %>
+              <.location_pane
+                location={@location}
+                stats={@stats}
+                view={@view}
+                sort={@sort}
+                order={@order}
+                pending_new={@pending_new}
+                eol?={@eol?}
+                streams={@streams}
+              />
+          <% end %>
+        </main>
+      </div>
 
-    <.file_modal :if={@live_action == :file_detail and @selected} selected={@selected} location={@location} />
+      <.file_modal
+        :if={@live_action == :file_detail and @selected}
+        selected={@selected}
+        location={@location}
+      />
+    </Layouts.app>
     """
   end
 
@@ -467,7 +508,7 @@ defmodule AtlasWeb.FileBrowserLive do
 
   defp empty_state(assigns) do
     ~H"""
-    <div class="max-w-lg mx-auto text-center mt-24 space-y-3">
+    <div data-testid="empty-state" class="max-w-lg mx-auto text-center mt-24 space-y-3">
       <.icon name="hero-folder-plus" class="size-12 text-base-content/60" />
       <h2 class="text-xl font-semibold">No locations yet</h2>
       <p class="text-base-content/70">
@@ -500,10 +541,12 @@ defmodule AtlasWeb.FileBrowserLive do
 
   defp location_pane(assigns) do
     ~H"""
-    <header class="flex items-center justify-between gap-6 pb-4">
+    <header class="flex items-center justify-between gap-6 pb-4" data-testid="location-header">
       <div class="min-w-0">
         <div class="flex items-center gap-2">
-          <h1 class="text-lg font-semibold truncate">{@location.path}</h1>
+          <h1 class="text-lg font-semibold truncate" data-testid="location-path">
+            {@location.path}
+          </h1>
           <span
             :if={@stats.watching?}
             class="badge badge-success badge-sm gap-1"
@@ -523,8 +566,11 @@ defmodule AtlasWeb.FileBrowserLive do
             Not watching
           </span>
         </div>
-        <p class="text-sm text-base-content/70">
-          {@stats.files_count} files · {AtlasWeb.FileHelpers.format_size(@stats.bytes_total)}
+        <p class="text-sm text-base-content/70" data-testid="location-stats">
+          <span data-testid="files-count">{@stats.files_count}</span>
+          files · <span data-testid="bytes-total">
+            {AtlasWeb.FileHelpers.format_size(@stats.bytes_total)}
+          </span>
           <span :if={@stats.last_scanned_at_us}>
             · last full scan {AtlasWeb.FileHelpers.format_relative_time(@stats.last_scanned_at_us)}
           </span>
@@ -550,7 +596,7 @@ defmodule AtlasWeb.FileBrowserLive do
       </div>
     </header>
 
-    <div :if={@pending_new > 0} class="alert alert-info mb-4">
+    <div :if={@pending_new > 0} data-testid="pending-new-alert" class="alert alert-info mb-4">
       <.icon name="hero-arrow-path" class="size-4" />
       <span>{@pending_new} new files outside current page</span>
       <button class="btn btn-sm btn-ghost" phx-click="refresh">Refresh</button>

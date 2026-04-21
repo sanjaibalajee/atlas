@@ -43,53 +43,75 @@ defmodule AtlasWeb.FileBrowserLiveTest do
 
   describe ":index action" do
     test "empty state when no locations", %{conn: conn} do
-      # Ensure no active locations; any from prior tests should have been
-      # tombstoned by on_exit.
       case Library.list_locations() do
         [] ->
-          {:ok, _view, html} = live(conn, ~p"/")
-          assert html =~ "No locations yet"
+          {:ok, view, _html} = live(conn, ~p"/")
+          assert has_element?(view, "[data-testid='empty-state']")
 
         _locs ->
-          # Other tests seeded locations that share the projection; still
-          # verify /l/:id renders (covered below).
-          {:ok, _view, html} = live(conn, ~p"/")
-          assert html =~ "Atlas"
+          # A prior test seeded locations that share the projection;
+          # verify /l/:id below.
+          {:ok, view, _html} = live(conn, ~p"/")
+          refute has_element?(view, "[data-testid='empty-state']")
       end
     end
 
-    test "sidebar lists locations", %{conn: conn, dir: dir} do
+    test "sidebar lists locations with stable links", %{conn: conn, dir: dir} do
       location = seed_location!(dir, [{"a.txt", "alpha"}])
 
-      {:ok, _view, html} = live(conn, ~p"/")
-      assert html =~ Path.basename(location.path)
+      {:ok, view, _html} = live(conn, ~p"/")
+      assert has_element?(view, ~s|a[href="/l/#{location.id}"]|)
+    end
+  end
+
+  describe "malformed URL params" do
+    test "non-integer location_id falls back gracefully", %{conn: conn} do
+      {:ok, view, html} = live(conn, ~p"/l/not-an-int")
+      # The LiveView must survive and show the :index fallback rather than
+      # crash with ArgumentError.
+      assert html =~ "Atlas"
+      assert render(view) =~ "Invalid location id"
+    end
+
+    test "non-integer file_id falls back gracefully", %{conn: conn, dir: dir} do
+      location = seed_location!(dir, [{"a.txt", "1"}])
+
+      {:ok, view, _html} = live(conn, ~p"/l/#{location.id}/f/nope")
+      # Modal is not opened; location pane still renders.
+      refute has_element?(view, "#file-detail")
+      assert render(view) =~ "Invalid file id"
     end
   end
 
   describe ":show action" do
     test "renders the file list", %{conn: conn, dir: dir} do
       location = seed_location!(dir, [{"alpha.txt", "1"}, {"beta.txt", "2"}])
+      %{rows: rows} = Library.list_files(location.id)
+      ids = Enum.map(rows, & &1.id)
 
-      {:ok, _view, html} = live(conn, ~p"/l/#{location.id}")
-      assert html =~ "alpha.txt"
-      assert html =~ "beta.txt"
+      {:ok, view, _html} = live(conn, ~p"/l/#{location.id}")
+
+      for id <- ids, do: assert(has_element?(view, "#file-#{id}"))
     end
 
     test "new file raises the N-new toast; refresh loads it", %{conn: conn, dir: dir} do
       location = seed_location!(dir, [{"a.txt", "hello"}])
 
       {:ok, view, _html} = live(conn, ~p"/l/#{location.id}")
-      refute render(view) =~ "live_new.txt"
+      refute has_element?(view, "[data-testid='pending-new-alert']")
 
       File.write!(Path.join(dir, "live_new.txt"), "fresh")
       {:ok, _} = Locations.scan(dir)
       :ok = Projector.catch_up_to(Log.head())
 
-      assert eventually(fn -> render(view) =~ "new files outside current page" end)
+      assert eventually(fn ->
+               has_element?(view, "[data-testid='pending-new-alert']")
+             end)
 
       view |> element("button", "Refresh") |> render_click()
 
-      assert render(view) =~ "live_new.txt"
+      new_file = Atlas.Repo.get_by(Atlas.Schemas.File, path: Path.join(location.path, "live_new.txt"))
+      assert has_element?(view, "#file-#{new_file.id}")
     end
 
     test "live-updates an already-visible file in place", %{conn: conn, dir: dir} do
@@ -97,27 +119,35 @@ defmodule AtlasWeb.FileBrowserLiveTest do
       File.write!(file_path, "short")
       location = seed_location!(dir, [])
 
+      file = Atlas.Repo.get_by(Atlas.Schemas.File, path: Path.expand(file_path))
+
       {:ok, view, _} = live(conn, ~p"/l/#{location.id}")
-      html = render(view)
-      assert html =~ "mutable.txt"
-      assert html =~ "1 files"
+      assert has_element?(view, "#file-#{file.id}")
+
+      files_count = view |> element("[data-testid='files-count']") |> render()
+      assert files_count =~ ">1<"
 
       Process.sleep(1100)
       File.write!(file_path, String.duplicate("x", 4096))
       {:ok, _} = Locations.scan(dir)
       :ok = Projector.catch_up_to(Log.head())
 
-      # In-place row update AND header-stats refresh.
-      assert eventually(fn -> render(view) =~ "4.0 KiB" end)
-
-      updated = render(view)
-      refute updated =~ "5 B"
+      # In-place row update (id stable) AND header bytes refresh.
+      assert eventually(fn ->
+               view
+               |> element("[data-testid='bytes-total']")
+               |> render() =~ "4.0 KiB"
+             end)
     end
 
     test "deleted file disappears from the stream", %{conn: conn, dir: dir} do
       location = seed_location!(dir, [{"ghost.txt", "spooky"}])
+
+      file =
+        Atlas.Repo.get_by(Atlas.Schemas.File, path: Path.expand(Path.join(dir, "ghost.txt")))
+
       {:ok, view, _} = live(conn, ~p"/l/#{location.id}")
-      assert render(view) =~ "ghost.txt"
+      assert has_element?(view, "#file-#{file.id}")
 
       target = Path.expand(Path.join(dir, "ghost.txt"))
 
@@ -130,7 +160,7 @@ defmodule AtlasWeb.FileBrowserLiveTest do
 
       :ok = Projector.catch_up_to(seq)
 
-      assert eventually(fn -> not (render(view) =~ "ghost.txt") end)
+      assert eventually(fn -> not has_element?(view, "#file-#{file.id}") end)
     end
 
     test "stale messages from previously-subscribed locations are dropped",

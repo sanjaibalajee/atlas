@@ -19,6 +19,43 @@
 
 // Include phoenix_html to handle method=PUT/DELETE in forms and buttons.
 import "phoenix_html"
+
+// Theme toggle. Kept in the bundled JS (per AGENTS.md: never write inline
+// <script> tags in templates). The public contract must not change:
+//   - localStorage key:         "phx:theme"
+//   - HTML attribute:           <html data-theme="light|dark">
+//   - custom event the toggle
+//     buttons dispatch:         "phx:set-theme", with data-phx-theme on the
+//                               source element
+// Kept as an IIFE so setTheme stays module-private and the listeners are
+// registered exactly once when the bundle loads.
+;(() => {
+  const setTheme = (theme) => {
+    if (theme === "system") {
+      localStorage.removeItem("phx:theme")
+      document.documentElement.removeAttribute("data-theme")
+    } else {
+      localStorage.setItem("phx:theme", theme)
+      document.documentElement.setAttribute("data-theme", theme)
+    }
+  }
+
+  // Only apply a stored preference on first load; a server-rendered
+  // data-theme (if we ever set one) wins.
+  if (!document.documentElement.hasAttribute("data-theme")) {
+    setTheme(localStorage.getItem("phx:theme") || "system")
+  }
+
+  // Sync across tabs.
+  window.addEventListener("storage", (e) => {
+    if (e.key === "phx:theme") setTheme(e.newValue || "system")
+  })
+
+  // Toggle buttons dispatch this via JS.dispatch("phx:set-theme"); read the
+  // target theme from the clicked element's data-phx-theme attribute.
+  window.addEventListener("phx:set-theme", (e) => setTheme(e.target.dataset.phxTheme))
+})()
+
 // Establish Phoenix Socket and LiveView configuration.
 import {Socket} from "phoenix"
 import {LiveSocket} from "phoenix_live_view"

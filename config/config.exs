@@ -36,7 +36,7 @@ config :atlas_web, AtlasWeb.Endpoint,
   # Atlas.PubSub is supervised by Atlas.Application; AtlasWeb just broadcasts
   # into it and subscribes from LiveViews.
   pubsub_server: Atlas.PubSub,
-  live_view: [signing_salt: "KsJ7y7H1"]
+  live_view: [signing_salt: "bqZJaBJQGZGQqoOrKQEIi6mOBh09lX1Q"]
 
 # Asset build pipelines (Phoenix defaults)
 config :esbuild,

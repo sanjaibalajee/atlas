@@ -31,4 +31,18 @@ defmodule Atlas.Watcher.NormalizeTest do
     # symlinks; anything else like /private/etc is a real path.
     assert Watcher.normalize("/private/etc/hosts") == "/private/etc/hosts"
   end
+
+  test "respects directory boundaries — only dir-exact or trailing-slash matches" do
+    # Regression: without boundary discipline, `/private/tmp` <> rest would
+    # also match `/private/tmpfoo` and rewrite it to `/tmpfoo`.
+    assert Watcher.normalize("/private/tmpfoo") == "/private/tmpfoo"
+    assert Watcher.normalize("/private/tmpfoo/bar") == "/private/tmpfoo/bar"
+    assert Watcher.normalize("/private/varfoo") == "/private/varfoo"
+    assert Watcher.normalize("/private/varfoo/bar") == "/private/varfoo/bar"
+  end
+
+  test "exact directory name (no trailing content) is normalised" do
+    assert Watcher.normalize("/private/tmp") == "/tmp"
+    assert Watcher.normalize("/private/var") == "/var"
+  end
 end
