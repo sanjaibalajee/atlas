@@ -16,17 +16,18 @@ erl_crash.dump
 .lexical/
 
 # --- Rust (NIF build artifacts) ---
-/native/*/target/
+# `**/` so umbrella paths like apps/atlas/native/*/target are also caught.
+**/native/*/target/
 
 # --- Compiled NIF artifacts (built from native/ on mix compile) ---
-/priv/native/
+**/priv/native/
 
 # --- Runtime data (library DBs, object store, logs) ---
-/priv/data/
+**/priv/data/
 
 # --- Dialyzer ---
 /.plts/
-/priv/plts/
+**/priv/plts/
 *.plt
 *.plt.hash
 
@@ -47,6 +48,11 @@ erl_crash.dump
 .env
 .env.*
 .envrc
+
+# --- Node / Phoenix assets (Tailwind + esbuild binaries live here) ---
+# Only the installers are cached under deps/tailwind and deps/esbuild,
+# and deps/ is already ignored, but exclude any app-local node_modules.
+node_modules/
 
 # --- Temp dirs ---
 /tmp/
