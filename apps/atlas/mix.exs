@@ -6,7 +6,7 @@ defmodule Atlas.MixProject do
   def project do
     [
       app: :atlas,
-      version: @version,
+      version: `@version`,
       build_path: "../../_build",
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
@@ -17,6 +17,7 @@ defmodule Atlas.MixProject do
       deps: deps(),
       escript: escript(),
       aliases: aliases(),
+      cli: cli(),
       dialyzer: dialyzer(),
       test_coverage: [summary: [threshold: 75]]
     ]
