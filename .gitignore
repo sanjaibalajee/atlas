@@ -1,0 +1,65 @@
+# --- Private planning docs (local-only) ---
+PLAN.md
+ARCHITECTURE.md
+
+# --- Elixir / Mix ---
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+.lexical/
+
+# --- Rust (NIF build artifacts) ---
+/native/*/target/
+
+# --- Compiled NIF artifacts (built from native/ on mix compile) ---
+/priv/native/
+
+# --- Runtime data (library DBs, object store, logs) ---
+/priv/data/
+
+# --- Dialyzer ---
+/.plts/
+/priv/plts/
+*.plt
+*.plt.hash
+
+# --- SQLite ---
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- Escript binary output (mix escript.build) ---
+/atlas
+
+# --- Logs + pid files (daemon mode, Phase 2) ---
+*.log
+*.pid
+
+# --- Environment / secrets ---
+.env
+.env.*
+.envrc
+
+# --- Temp dirs ---
+/tmp/
+
+# --- Editors / IDEs ---
+.vscode/
+.idea/
+.cursor/
+*.iml
+*.swp
+*.swo
+*~
+
+# --- OS ---
+.DS_Store
+Thumbs.db

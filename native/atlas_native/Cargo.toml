@@ -1,0 +1,23 @@
+[package]
+name = "atlas_native"
+version = "0.1.0"
+edition = "2021"
+authors = []
+rust-version = "1.85"
+
+[lib]
+name = "atlas_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+rustler = "0.34"
+blake3 = { version = "1.5", features = ["mmap"] }
+fastcdc = "3.1"
+
+[profile.release]
+lto = true
+opt-level = 3
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1  # release-like speed for hashing; keeps dev compile fast enough.
