@@ -187,6 +187,84 @@ defmodule AtlasWeb.FileBrowserLiveTest do
     end
   end
 
+  describe "location management (M2.4)" do
+    test "submitting the add-location form watches the directory",
+         %{conn: conn} do
+      dir = Path.join(System.tmp_dir!(), "atlas_m24_add_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      File.write!(Path.join(dir, "first.txt"), "hello")
+
+      on_exit(fn ->
+        _ = Locations.remove(dir)
+        File.rm_rf(dir)
+      end)
+
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      view |> element("[data-testid='toggle-add-form']") |> render_click()
+      assert has_element?(view, "[data-testid='add-location-form']")
+
+      view
+      |> form("[data-testid='add-location-form']", %{"path" => dir})
+      |> render_submit()
+
+      location = Locations.get(dir)
+      assert location != nil
+      assert has_element?(view, "[data-testid='sidebar-location-#{location.id}']")
+      assert Path.expand(dir) in Atlas.Watcher.Supervisor.watching()
+    end
+
+    test "adding a non-existent path flashes an error and does not append an event",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      before_head = Log.head()
+
+      view |> element("[data-testid='toggle-add-form']") |> render_click()
+
+      view
+      |> form("[data-testid='add-location-form']", %{"path" => "/definitely/not/a/real/path"})
+      |> render_submit()
+
+      assert render(view) =~ "Path does not exist"
+      assert Log.head() == before_head
+    end
+
+    test "remove button tombstones the location and stops the watcher",
+         %{conn: conn, dir: dir} do
+      location = seed_location!(dir, [{"a.txt", "x"}])
+
+      {:ok, view, _html} = live(conn, ~p"/l/#{location.id}")
+      assert has_element?(view, "[data-testid='sidebar-location-#{location.id}']")
+
+      html =
+        view
+        |> element("[data-testid='remove-location-#{location.id}']")
+        |> render_click()
+
+      refute has_element?(view, "[data-testid='sidebar-location-#{location.id}']")
+      # Info flash confirms the remove landed so users get visible feedback.
+      assert html =~ "Stopped watching"
+
+      reloaded = Locations.get(dir)
+      assert reloaded.removed_at_us != nil
+      refute Path.expand(dir) in Atlas.Watcher.Supervisor.watching()
+    end
+
+    test "remove button is always visible (not behind hover)", %{conn: conn, dir: dir} do
+      location = seed_location!(dir, [{"a.txt", "x"}])
+      {:ok, view, _html} = live(conn, ~p"/")
+
+      # The button must exist in the DOM independent of hover state; tests
+      # can't trigger :hover pseudoclasses, so visibility via `invisible`
+      # would silently make the remove unreachable.
+      remove = element(view, "[data-testid='remove-location-#{location.id}']")
+      html = render(remove)
+      refute html =~ "invisible"
+      refute html =~ "group-hover"
+    end
+  end
+
   describe ":file_detail action" do
     test "opens a modal with file metadata", %{conn: conn, dir: dir} do
       location = seed_location!(dir, [{"subject.txt", "content"}])

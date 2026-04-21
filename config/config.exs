@@ -17,6 +17,11 @@ config :atlas, Atlas.Repo,
   database: "data/projection.db",
   pool_size: 5,
   journal_mode: :wal,
+  # Fold the WAL back into the main db file every 1000 pages (~4 MB). The
+  # default matches this, but stating it explicitly prevents regressions if
+  # a future ecto_sqlite3 release changes defaults. `Atlas.Maintenance`
+  # also runs a PASSIVE checkpoint every 60 s for belt-and-braces coverage.
+  wal_autocheckpoint: 1000,
   cache_size: -64_000,
   temp_store: :memory,
   show_sensitive_data_on_connection_error: false

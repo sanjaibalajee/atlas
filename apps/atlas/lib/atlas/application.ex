@@ -14,7 +14,8 @@ defmodule Atlas.Application do
       ├── Atlas.Projection.Supervisor      (event → Ecto projector)
       ├── Atlas.Watcher.Supervisor         (per-location file watchers)
       ├── Atlas.Watcher.Boot               (one-shot: revive watchers for active locations)
-      └── Atlas.Indexer.Supervisor         (dynamic per-run indexers)
+      ├── Atlas.Indexer.Supervisor         (dynamic per-run indexers)
+      └── Atlas.Maintenance                (WAL checkpoint + orphan GC)
 
   The order matters: the projector depends on the log; the indexer depends
   on both the log and the store; everything depends on the repo. PubSub
@@ -38,7 +39,8 @@ defmodule Atlas.Application do
       Atlas.Projection.Supervisor,
       Atlas.Watcher.Supervisor,
       Atlas.Watcher.Boot,
-      Atlas.Indexer.Supervisor
+      Atlas.Indexer.Supervisor,
+      Atlas.Maintenance
     ]
 
     opts = [strategy: :one_for_one, name: Atlas.Supervisor]

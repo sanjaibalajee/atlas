@@ -57,6 +57,7 @@ defmodule AtlasWeb.FileBrowserLive do
         visible_ids: MapSet.new(),
         pending_new: 0,
         selected: nil,
+        show_add_form: false,
         page_title: "Atlas"
       )
       |> stream(:files, [], dom_id: &dom_id(&1.id))
@@ -204,12 +205,17 @@ defmodule AtlasWeb.FileBrowserLive do
     order = parse_order(params["dir"]) || socket.assigns.order
     view = parse_view(params["view"]) || socket.assigns.view
 
-    changed? =
+    sort_or_order_changed? =
       sort != socket.assigns.sort or order != socket.assigns.order
+
+    # Re-stream on view change too: LiveStream only emits freshly-inserted
+    # rows. Switching to a new container (list ↔ grid) means the new body
+    # has nothing to render unless we replay the current page.
+    view_changed? = view != socket.assigns.view
 
     socket = assign(socket, sort: sort, order: order, view: view)
 
-    if changed? and socket.assigns.location_id do
+    if (sort_or_order_changed? or view_changed?) and socket.assigns.location_id do
       socket
       |> stream(:files, [], reset: true, dom_id: &dom_id(&1.id))
       |> assign(visible_ids: MapSet.new(), pending_new: 0, cursor: nil, eol?: false)
@@ -401,6 +407,83 @@ defmodule AtlasWeb.FileBrowserLive do
      )}
   end
 
+  # --- Location management (M2.4) ---
+
+  def handle_event("toggle_add_form", _params, socket) do
+    {:noreply, update(socket, :show_add_form, &(not &1))}
+  end
+
+  def handle_event("add_location", %{"path" => raw_path}, socket) do
+    path = raw_path |> to_string() |> String.trim()
+
+    case validate_new_location_path(path) do
+      {:ok, expanded} ->
+        case Atlas.Locations.add(expanded) do
+          {:ok, location} ->
+            {:noreply,
+             socket
+             |> assign(:show_add_form, false)
+             |> assign(:locations, Library.list_locations())
+             |> put_flash(:info, "Watching #{location.path}")
+             |> push_patch(to: ~p"/l/#{location.id}")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, humanize_add_error(reason))}
+        end
+
+      {:error, message} ->
+        {:noreply, put_flash(socket, :error, message)}
+    end
+  end
+
+  def handle_event("remove_location", %{"id" => id_str}, socket) do
+    with {:ok, id} <- parse_id(id_str),
+         %{path: path} <- Enum.find(socket.assigns.locations, &(&1.id == id)) do
+      case Atlas.Locations.remove(path) do
+        :ok ->
+          # If the removed location was the one being viewed, hop back to the
+          # :index action so we don't render a dangling pane.
+          socket =
+            if socket.assigns.location_id == id do
+              push_patch(socket, to: ~p"/")
+            else
+              socket
+            end
+
+          {:noreply,
+           socket
+           |> assign(:locations, Library.list_locations())
+           |> put_flash(:info, "Stopped watching #{path}")}
+
+        {:error, reason} ->
+          {:noreply, put_flash(socket, :error, "Could not remove: #{inspect(reason)}")}
+      end
+    else
+      _ ->
+        {:noreply, put_flash(socket, :error, "Unknown location.")}
+    end
+  end
+
+  # Reject clearly-bad paths before touching the log. Prevents orphan
+  # LocationAdded events for typos / missing dirs. `Locations.add/1` is
+  # otherwise idempotent so a repeat of an already-watched path is harmless.
+  defp validate_new_location_path(""), do: {:error, "Path is required."}
+
+  defp validate_new_location_path(path) do
+    expanded = Path.expand(path)
+
+    case File.stat(expanded) do
+      {:ok, %File.Stat{type: :directory}} -> {:ok, expanded}
+      {:ok, %File.Stat{type: other}} -> {:error, "Not a directory (#{other}): #{expanded}"}
+      {:error, :enoent} -> {:error, "Path does not exist: #{expanded}"}
+      {:error, reason} -> {:error, "Cannot read path: #{inspect(reason)}"}
+    end
+  end
+
+  defp humanize_add_error({:not_a_directory, path}), do: "Not a directory: #{path}"
+  defp humanize_add_error(:enoent), do: "Path not found."
+  defp humanize_add_error(reason), do: "Could not add location: #{inspect(reason)}"
+
   # --- URL helpers ---
 
   defp current_path(socket, overrides) do
@@ -448,7 +531,24 @@ defmodule AtlasWeb.FileBrowserLive do
     <Layouts.app flash={@flash}>
       <div class="min-h-screen flex" id="file-browser-root">
         <aside class="w-64 shrink-0 border-r border-base-300 bg-base-100 p-4 overflow-y-auto">
-          <div class="font-semibold text-lg mb-4">Atlas</div>
+          <div class="flex items-center justify-between mb-4">
+            <span class="font-semibold text-lg">Atlas</span>
+            <button
+              type="button"
+              class="btn btn-xs btn-ghost"
+              phx-click="toggle_add_form"
+              aria-label="Add location"
+              data-testid="toggle-add-form"
+            >
+              <.icon
+                name={if @show_add_form, do: "hero-x-mark", else: "hero-plus"}
+                class="size-4"
+              />
+            </button>
+          </div>
+
+          <.add_location_form :if={@show_add_form} />
+
           <.sidebar_locations locations={@locations} current_id={@location_id} />
         </aside>
 
@@ -492,17 +592,61 @@ defmodule AtlasWeb.FileBrowserLive do
     <div :if={@locations == []} class="text-sm text-base-content/70">
       No locations yet.
     </div>
-    <ul class="menu menu-sm bg-base-100 w-full">
-      <li :for={loc <- @locations}>
-        <.link
-          patch={~p"/l/#{loc.id}"}
-          class={["rounded", loc.id == @current_id && "menu-active"]}
-        >
-          <.icon name="hero-folder" class="size-4" />
-          <span class="truncate">{AtlasWeb.FileHelpers.location_name(loc.path)}</span>
-        </.link>
+    <ul class="menu menu-sm bg-base-100 w-full" data-testid="sidebar-locations">
+      <li :for={loc <- @locations} data-testid={"sidebar-location-#{loc.id}"}>
+        <div class="flex items-center gap-1 rounded hover:bg-base-200 pr-1">
+          <.link
+            patch={~p"/l/#{loc.id}"}
+            class={[
+              "flex-1 min-w-0 flex items-center gap-2 px-2 py-1 rounded",
+              loc.id == @current_id && "menu-active"
+            ]}
+          >
+            <.icon name="hero-folder" class="size-4 shrink-0" />
+            <span class="truncate">{AtlasWeb.FileHelpers.location_name(loc.path)}</span>
+          </.link>
+          <button
+            type="button"
+            class="btn btn-xs btn-ghost opacity-40 hover:opacity-100"
+            phx-click="remove_location"
+            phx-value-id={loc.id}
+            data-confirm={"Stop watching #{loc.path}?"}
+            aria-label="Remove location"
+            title={"Stop watching #{loc.path}"}
+            data-testid={"remove-location-#{loc.id}"}
+          >
+            <.icon name="hero-x-mark" class="size-3" />
+          </button>
+        </div>
       </li>
     </ul>
+    """
+  end
+
+  defp add_location_form(assigns) do
+    ~H"""
+    <form
+      phx-submit="add_location"
+      class="mb-4 space-y-2"
+      data-testid="add-location-form"
+    >
+      <label class="text-xs font-medium text-base-content/70">
+        Path to watch
+      </label>
+      <input
+        type="text"
+        name="path"
+        placeholder="/Users/you/Pictures"
+        class="input input-sm input-bordered w-full"
+        required
+        autocomplete="off"
+        spellcheck="false"
+        phx-mounted={Phoenix.LiveView.JS.focus()}
+      />
+      <button type="submit" class="btn btn-sm btn-primary w-full">
+        Add
+      </button>
+    </form>
     """
   end
 
@@ -602,22 +746,20 @@ defmodule AtlasWeb.FileBrowserLive do
       <button class="btn btn-sm btn-ghost" phx-click="refresh">Refresh</button>
     </div>
 
-    <%= case @view do %>
-      <% :grid -> %>
-        <.grid_body
-          streams={@streams}
-          location={@location}
-          eol?={@eol?}
-        />
-      <% _ -> %>
-        <.list_body
-          streams={@streams}
-          location={@location}
-          sort={@sort}
-          order={@order}
-          eol?={@eol?}
-        />
-    <% end %>
+    <.list_body
+      :if={@view != :grid}
+      streams={@streams}
+      location={@location}
+      sort={@sort}
+      order={@order}
+      eol?={@eol?}
+    />
+    <.grid_body
+      :if={@view == :grid}
+      streams={@streams}
+      location={@location}
+      eol?={@eol?}
+    />
     """
   end
 

@@ -37,6 +37,13 @@ defmodule Atlas.Log.SqliteLog do
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
+  # How often to checkpoint (fold the WAL into the main db and truncate the
+  # WAL file). Without this the log WAL grows unbounded because the
+  # SqliteLog GenServer holds its writer connection open forever, defeating
+  # SQLite's default autocheckpoint-on-close. 60s balances IO cost against
+  # disk growth for a typical watcher firing a handful of events per second.
+  @checkpoint_interval_ms 60_000
+
   @impl GenServer
   def init(_opts) do
     path = Atlas.log_db_path()
@@ -45,14 +52,38 @@ defmodule Atlas.Log.SqliteLog do
     {:ok, db} = Sqlite3.open(path)
     :ok = Sqlite3.execute(db, "PRAGMA journal_mode = WAL")
     :ok = Sqlite3.execute(db, "PRAGMA synchronous = NORMAL")
+    # Autocheckpoint threshold (pages; default is 1000 ≈ 4 MB). Paired with
+    # the periodic :checkpoint message below for belt-and-braces coverage.
+    :ok = Sqlite3.execute(db, "PRAGMA wal_autocheckpoint = 1000")
     :ok = init_schema(db)
 
+    schedule_checkpoint()
     Logger.debug("log.sqlite ready at #{path}")
     {:ok, %{db: db, path: path}}
   end
 
   @impl GenServer
-  def terminate(_reason, %{db: db}), do: Sqlite3.close(db)
+  def terminate(_reason, %{db: db}) do
+    # Truncate the WAL on orderly shutdown so the on-disk footprint stays
+    # small after `mix phx.server` exits. TRUNCATE mode blocks until all
+    # readers drain and resets the WAL file to zero.
+    _ = Sqlite3.execute(db, "PRAGMA wal_checkpoint(TRUNCATE)")
+    Sqlite3.close(db)
+  end
+
+  @impl GenServer
+  def handle_info(:checkpoint, %{db: db} = state) do
+    case Sqlite3.execute(db, "PRAGMA wal_checkpoint(PASSIVE)") do
+      :ok -> :ok
+      other -> Logger.warning("log.sqlite: checkpoint failed: #{inspect(other)}")
+    end
+
+    schedule_checkpoint()
+    {:noreply, state}
+  end
+
+  defp schedule_checkpoint,
+    do: Process.send_after(self(), :checkpoint, @checkpoint_interval_ms)
 
   @impl GenServer
   def handle_call({:append, event}, _from, %{db: db} = state) do

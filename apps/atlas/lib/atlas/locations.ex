@@ -94,6 +94,12 @@ defmodule Atlas.Locations do
     case Log.append(%Event.LocationRemoved{v: 1, at: Event.now_us(), path: path}) do
       {:ok, seq} ->
         :ok = Projector.catch_up_to(seq)
+        # Files under a tombstoned location are NOT deleted by the projector
+        # (they retain their own deleted_at_us as nil — the location's
+        # tombstone is enough for UI filtering). Their chunks therefore
+        # don't become orphans just because the location was removed, so
+        # no eager GC call here. `Atlas.Maintenance` sweeps periodically
+        # for the general case (file churn, re-indexing, etc.).
         :ok
 
       other ->
