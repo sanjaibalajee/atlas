@@ -208,9 +208,29 @@ defmodule Atlas.Projection.Projector do
   end
 
   defp apply_event(%Event.LocationIgnoreSet{path: path, patterns: patterns}) do
+    # `update_all` with a raw value bypasses Ecto.Type.dump for fields whose
+    # custom types (here `Atlas.Schemas.JsonList`) serialize at dump time.
+    # Fetching the changeset target and using `Repo.update!` routes the
+    # list through JsonList so it lands on disk as JSON text.
+    case Repo.get_by(Location, path: path) do
+      %Location{} = loc ->
+        loc
+        |> Location.changeset(%{ignore_patterns: patterns})
+        |> Repo.update!()
+
+        {:ok, %{location_id: loc.id}}
+
+      nil ->
+        {:ok, %{location_id: nil}}
+    end
+  end
+
+  defp apply_event(%Event.LocationModeSet{path: path, mode: mode}) do
+    mode_str = to_string(mode)
+
     Repo.update_all(
       from(l in Location, where: l.path == ^path),
-      set: [ignore_patterns: Jason.encode!(patterns)]
+      set: [index_mode: mode_str]
     )
 
     location = Repo.get_by(Location, path: path)
@@ -387,6 +407,10 @@ defmodule Atlas.Projection.Projector do
 
   defp broadcast_change(%Event.LocationIgnoreSet{} = e, _seq, ctx, _) do
     emit_location_change(:ignore_set, ctx.location_id, e.path)
+  end
+
+  defp broadcast_change(%Event.LocationModeSet{} = e, _seq, ctx, _) do
+    emit_location_change(:mode_set, ctx.location_id, e.path)
   end
 
   defp broadcast_change(%Event.LocationScanProgress{} = e, _seq, ctx, _) do

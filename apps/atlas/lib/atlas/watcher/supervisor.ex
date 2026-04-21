@@ -15,12 +15,20 @@ defmodule Atlas.Watcher.Supervisor do
   @doc """
   Start a watcher on `path`. Returns `{:ok, pid}`. Idempotent — calling
   twice for the same path returns the existing watcher's pid.
+
+  `patterns` (optional) is the location's current ignore-pattern list,
+  passed in by the caller. Compiled once on init; filters OS events
+  before the indexer sees them. Passing patterns here (rather than
+  having the watcher query the projection itself) keeps DB access off
+  the watcher's init path — important for tests where the watcher
+  process isn't in the Ecto sandbox's allow list.
   """
-  @spec start_watching(Path.t()) :: {:ok, pid()} | {:error, term()}
-  def start_watching(path) do
+  @spec start_watching(Path.t(), [String.t()] | nil, :shallow | :content) ::
+          {:ok, pid()} | {:error, term()}
+  def start_watching(path, patterns \\ nil, mode \\ :shallow) do
     path = Path.expand(path)
 
-    case DynamicSupervisor.start_child(__MODULE__, {Atlas.Watcher, path}) do
+    case DynamicSupervisor.start_child(__MODULE__, {Atlas.Watcher, {path, patterns, mode}}) do
       {:ok, pid} -> {:ok, pid}
       {:error, {:already_started, pid}} -> {:ok, pid}
       other -> other

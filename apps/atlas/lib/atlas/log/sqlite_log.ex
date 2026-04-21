@@ -197,4 +197,7 @@ defmodule Atlas.Log.SqliteLog do
   defp event_kind(%Atlas.Domain.Event.LocationRemoved{}), do: "location_removed"
   defp event_kind(%Atlas.Domain.Event.LocationScanStarted{}), do: "location_scan_started"
   defp event_kind(%Atlas.Domain.Event.LocationScanCompleted{}), do: "location_scan_completed"
+  defp event_kind(%Atlas.Domain.Event.LocationScanProgress{}), do: "location_scan_progress"
+  defp event_kind(%Atlas.Domain.Event.LocationIgnoreSet{}), do: "location_ignore_set"
+  defp event_kind(%Atlas.Domain.Event.LocationModeSet{}), do: "location_mode_set"
 end

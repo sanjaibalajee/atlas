@@ -19,8 +19,11 @@ defmodule Atlas.GCTest do
     {:ok, dir: dir}
   end
 
+  # GC is a content-mode concept — it reclaims orphan CAS chunks. Shallow
+  # mode doesn't produce chunks to reclaim, so these tests must run the
+  # indexer in content mode explicitly.
   defp index(dir) do
-    {:ok, _} = Atlas.Indexer.index(dir)
+    {:ok, _} = Atlas.Indexer.index(dir, mode: :content)
     :ok = Atlas.Projection.Projector.catch_up_to(Atlas.Log.head())
   end
 

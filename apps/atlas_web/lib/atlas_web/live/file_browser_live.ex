@@ -121,6 +121,10 @@ defmodule AtlasWeb.FileBrowserLive do
     end
   end
 
+  defp apply_action(socket, :location_settings, params) do
+    switch_location(socket, params)
+  end
+
   # --- Location switch ---
   # Strict order: unsubscribe → reset stream → reassign → subscribe → reload.
   # Malformed ids fall through to the :index-style empty state + flash so a
@@ -320,6 +324,12 @@ defmodule AtlasWeb.FileBrowserLive do
     assign(socket, :stats, Library.file_stats(socket.assigns.location_id))
   end
 
+  # A deletion for a path that was never tracked in the projection (for
+  # example a file the indexer never saw because it matched ignore patterns,
+  # or a transient path created and removed before stat/1 could observe it).
+  # Nothing to remove from the stream — drop silently.
+  defp handle_file_change(socket, %{kind: :deleted, file_id: nil}), do: socket
+
   defp handle_file_change(socket, %{kind: :deleted, file_id: id}) do
     socket
     |> stream_delete_by_dom_id(:files, dom_id(id))
@@ -413,18 +423,19 @@ defmodule AtlasWeb.FileBrowserLive do
     {:noreply, update(socket, :show_add_form, &(not &1))}
   end
 
-  def handle_event("add_location", %{"path" => raw_path}, socket) do
-    path = raw_path |> to_string() |> String.trim()
+  def handle_event("add_location", params, socket) do
+    path = params |> Map.get("path", "") |> to_string() |> String.trim()
+    mode = if params["sync_mode"] == "true", do: :content, else: :shallow
 
     case validate_new_location_path(path) do
       {:ok, expanded} ->
-        case Atlas.Locations.add(expanded) do
+        case Atlas.Locations.add(expanded, mode: mode) do
           {:ok, location} ->
             {:noreply,
              socket
              |> assign(:show_add_form, false)
              |> assign(:locations, Library.list_locations())
-             |> put_flash(:info, "Watching #{location.path}")
+             |> put_flash(:info, "Watching #{location.path} (#{location.index_mode})")
              |> push_patch(to: ~p"/l/#{location.id}")}
 
           {:error, reason} ->
@@ -464,6 +475,67 @@ defmodule AtlasWeb.FileBrowserLive do
     end
   end
 
+  # Ignore patterns (M2.6) -----------------------------------------------
+
+  def handle_event("save_ignore_patterns", %{"patterns" => raw}, socket) do
+    location = socket.assigns.location
+
+    if location do
+      patterns = parse_patterns(raw)
+
+      case Atlas.Locations.set_ignore(location.path, patterns) do
+        :ok ->
+          # Re-fetch the location so the newly-persisted patterns assign
+          # reflects in the modal's form and sidebar state.
+          refreshed = Atlas.Locations.get(location.path)
+
+          {:noreply,
+           socket
+           |> assign(:location, refreshed)
+           |> assign(:locations, Library.list_locations())
+           |> put_flash(:info, "Ignore patterns updated. Next scan will apply them.")
+           |> push_patch(
+             to: ~p"/l/#{location.id}" <> query_string(socket)
+           )}
+
+        {:error, reason} ->
+          {:noreply,
+           put_flash(
+             socket,
+             :error,
+             "Could not update patterns: #{inspect(reason)}"
+           )}
+      end
+    else
+      {:noreply, put_flash(socket, :error, "No location selected.")}
+    end
+  end
+
+  def handle_event("rescan_location", _params, socket) do
+    case socket.assigns.location do
+      nil ->
+        {:noreply, put_flash(socket, :error, "No location selected.")}
+
+      location ->
+        case Atlas.Locations.scan(location.path) do
+          {:ok, result} ->
+            {:noreply,
+             socket
+             |> assign(:stats, Library.file_stats(location.id))
+             |> put_flash(
+               :info,
+               "Rescanned: #{result.new} new, #{result.modified} modified, " <>
+                 "#{result.unchanged} unchanged."
+             )}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Rescan failed: #{inspect(reason)}")}
+        end
+    end
+  end
+
+  # --- Validation helpers (M2.4 + M2.6) ---------------------------------
+
   # Reject clearly-bad paths before touching the log. Prevents orphan
   # LocationAdded events for typos / missing dirs. `Locations.add/1` is
   # otherwise idempotent so a repeat of an already-watched path is harmless.
@@ -482,7 +554,26 @@ defmodule AtlasWeb.FileBrowserLive do
 
   defp humanize_add_error({:not_a_directory, path}), do: "Not a directory: #{path}"
   defp humanize_add_error(:enoent), do: "Path not found."
+
+  defp humanize_add_error(:atlas_internal_path),
+    do: "That path is inside Atlas's own storage — refusing to watch it."
+
+  defp humanize_add_error(:contains_atlas_internal_path),
+    do:
+      "That path contains Atlas's own storage directory. Pick a subfolder " <>
+        "that doesn't include " <> Atlas.data_dir() <> "."
+
   defp humanize_add_error(reason), do: "Could not add location: #{inspect(reason)}"
+
+  defp parse_patterns(raw) when is_binary(raw) do
+    raw
+    |> String.split(~r/\r?\n/)
+    |> Enum.map(&String.trim/1)
+    |> Enum.reject(&(&1 == "" or String.starts_with?(&1, "#")))
+    |> Enum.uniq()
+  end
+
+  defp parse_patterns(_), do: []
 
   # --- URL helpers ---
 
@@ -578,6 +669,11 @@ defmodule AtlasWeb.FileBrowserLive do
         selected={@selected}
         location={@location}
       />
+
+      <.settings_modal
+        :if={@live_action == :location_settings and @location}
+        location={@location}
+      />
     </Layouts.app>
     """
   end
@@ -604,6 +700,15 @@ defmodule AtlasWeb.FileBrowserLive do
           >
             <.icon name="hero-folder" class="size-4 shrink-0" />
             <span class="truncate">{AtlasWeb.FileHelpers.location_name(loc.path)}</span>
+          </.link>
+          <.link
+            patch={~p"/l/#{loc.id}/settings"}
+            class="btn btn-xs btn-ghost opacity-40 hover:opacity-100"
+            aria-label="Ignore patterns"
+            title={"Ignore patterns for #{loc.path}"}
+            data-testid={"settings-location-#{loc.id}"}
+          >
+            <.icon name="hero-cog-6-tooth" class="size-3" />
           </.link>
           <button
             type="button"
@@ -643,6 +748,26 @@ defmodule AtlasWeb.FileBrowserLive do
         spellcheck="false"
         phx-mounted={Phoenix.LiveView.JS.focus()}
       />
+
+      <label class="label cursor-pointer justify-start gap-2 text-xs">
+        <input
+          type="checkbox"
+          name="sync_mode"
+          value="true"
+          class="checkbox checkbox-xs"
+          data-testid="sync-mode-checkbox"
+        />
+        <span class="label-text text-xs">
+          Index full content (for future sync)
+          <span
+            class="opacity-60"
+            title="Default is shallow — Atlas stores only a sampled content hash. Full content indexing writes every chunk to the local store; uses ~1× the source size in disk."
+          >
+            (?)
+          </span>
+        </span>
+      </label>
+
       <button type="submit" class="btn btn-sm btn-primary w-full">
         Add
       </button>
@@ -671,6 +796,110 @@ defmodule AtlasWeb.FileBrowserLive do
     <div class="max-w-md mx-auto text-center mt-24 text-base-content/70">
       Select a location from the sidebar.
     </div>
+    """
+  end
+
+  attr :location, :map, required: true
+
+  defp settings_modal(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :patterns_text,
+        (assigns.location.ignore_patterns || []) |> Enum.join("\n")
+      )
+
+    ~H"""
+    <dialog
+      id="location-settings"
+      class="modal modal-open"
+      data-testid="settings-modal"
+    >
+      <div class="modal-box max-w-2xl">
+        <form method="dialog">
+          <.link
+            patch={~p"/l/#{@location.id}"}
+            class="btn btn-sm btn-circle btn-ghost absolute right-2 top-2"
+            aria-label="Close"
+          >
+            ✕
+          </.link>
+        </form>
+        <h3 class="font-semibold text-lg">Ignore patterns</h3>
+        <p class="text-sm text-base-content/60 truncate" title={@location.path}>
+          {@location.path}
+        </p>
+
+        <div class="divider my-2"></div>
+
+        <form phx-submit="save_ignore_patterns" class="space-y-3" data-testid="ignore-form">
+          <label class="text-sm font-medium">One pattern per line</label>
+          <textarea
+            name="patterns"
+            rows="14"
+            class="textarea textarea-bordered w-full font-mono text-sm"
+            spellcheck="false"
+            data-testid="ignore-textarea"
+          >{@patterns_text}</textarea>
+
+          <details class="text-xs text-base-content/70">
+            <summary class="cursor-pointer">Pattern syntax</summary>
+            <ul class="list-disc ml-5 mt-2 space-y-1">
+              <li>
+                <code>node_modules</code>
+                — matches any directory or file named <code>node_modules</code> at any depth
+              </li>
+              <li>
+                <code>*.log</code>
+                — matches any file ending in <code>.log</code> at any depth
+              </li>
+              <li>
+                <code>build/out</code>
+                — matches the <code>build/out</code> path relative to the location root (and its descendants)
+              </li>
+              <li>
+                <code>/target</code>
+                — leading <code>/</code> anchors the pattern to the location root
+              </li>
+              <li>
+                <code>**/cache</code>
+                — same as <code>cache</code>, matches at any depth
+              </li>
+              <li>Lines starting with <code>#</code> are comments</li>
+            </ul>
+          </details>
+
+          <div class="flex items-center justify-between gap-2">
+            <button
+              type="button"
+              class="btn btn-sm btn-ghost"
+              phx-click="rescan_location"
+              data-testid="rescan-button"
+            >
+              <.icon name="hero-arrow-path" class="size-4" /> Rescan now
+            </button>
+            <div class="flex gap-2">
+              <.link
+                patch={~p"/l/#{@location.id}"}
+                class="btn btn-sm btn-ghost"
+              >
+                Cancel
+              </.link>
+              <button type="submit" class="btn btn-sm btn-primary" data-testid="save-patterns">
+                Save
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+      <.link
+        patch={~p"/l/#{@location.id}"}
+        class="modal-backdrop"
+        aria-label="Close settings"
+      >
+        <span class="sr-only">close</span>
+      </.link>
+    </dialog>
     """
   end
 

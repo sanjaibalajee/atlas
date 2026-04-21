@@ -265,6 +265,41 @@ defmodule AtlasWeb.FileBrowserLiveTest do
     end
   end
 
+  describe "ignore patterns settings modal (M2.6)" do
+    test "opens at /l/:id/settings and shows current patterns",
+         %{conn: conn, dir: dir} do
+      location = seed_location!(dir, [{"a.txt", "x"}])
+
+      {:ok, view, _html} = live(conn, ~p"/l/#{location.id}/settings")
+
+      assert has_element?(view, "[data-testid='settings-modal']")
+      # Defaults should include .git, node_modules, target — pre-seeded on add.
+      textarea = view |> element("[data-testid='ignore-textarea']") |> render()
+      assert textarea =~ ".git"
+      assert textarea =~ "node_modules"
+      assert textarea =~ "target"
+    end
+
+    test "saving patterns persists and closes the modal",
+         %{conn: conn, dir: dir} do
+      location = seed_location!(dir, [{"a.txt", "x"}])
+
+      {:ok, view, _html} = live(conn, ~p"/l/#{location.id}/settings")
+
+      view
+      |> form("[data-testid='ignore-form']", %{
+        "patterns" => "node_modules\n.git\n*.custom\n# a comment\n"
+      })
+      |> render_submit()
+
+      refreshed = Locations.get(dir)
+      assert refreshed.ignore_patterns == ["node_modules", ".git", "*.custom"]
+
+      # Patched back to /l/:id — the modal is no longer in the DOM.
+      refute has_element?(view, "[data-testid='settings-modal']")
+    end
+  end
+
   describe ":file_detail action" do
     test "opens a modal with file metadata", %{conn: conn, dir: dir} do
       location = seed_location!(dir, [{"subject.txt", "content"}])

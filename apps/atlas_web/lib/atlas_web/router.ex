@@ -21,6 +21,7 @@ defmodule AtlasWeb.Router do
       live "/", FileBrowserLive, :index
       live "/l/:location_id", FileBrowserLive, :show
       live "/l/:location_id/f/:file_id", FileBrowserLive, :file_detail
+      live "/l/:location_id/settings", FileBrowserLive, :location_settings
     end
   end
 

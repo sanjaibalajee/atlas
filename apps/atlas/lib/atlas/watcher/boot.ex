@@ -35,7 +35,10 @@ defmodule Atlas.Watcher.Boot do
   def ensure_watchers do
     Atlas.Library.list_locations()
     |> Enum.each(fn loc ->
-      case Atlas.Watcher.Supervisor.start_watching(loc.path) do
+      patterns = loc.ignore_patterns || []
+      mode = parse_mode(loc.index_mode)
+
+      case Atlas.Watcher.Supervisor.start_watching(loc.path, patterns, mode) do
         {:ok, _pid} ->
           :ok
 
@@ -46,4 +49,7 @@ defmodule Atlas.Watcher.Boot do
 
     :ok
   end
+
+  defp parse_mode("content"), do: :content
+  defp parse_mode(_), do: :shallow
 end

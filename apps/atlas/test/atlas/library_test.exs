@@ -129,7 +129,10 @@ defmodule Atlas.LibraryTest do
   describe "get_file/1" do
     test "returns file with chunk_count", %{dir: dir} do
       File.write!(Path.join(dir, "thing.txt"), "content")
-      {:ok, _} = Locations.add(dir)
+      # Use content mode explicitly — shallow mode skips the CAS and
+      # therefore does not populate file_chunks, which this test asserts
+      # on. The sampled-hash path is covered separately.
+      {:ok, _} = Locations.add(dir, mode: :content)
 
       location = Locations.get(dir)
       %{rows: [file]} = Library.list_files(location.id)

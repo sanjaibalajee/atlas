@@ -45,4 +45,84 @@ defmodule Atlas do
       _ -> Path.join(:code.priv_dir(:atlas), path)
     end
   end
+
+  @doc """
+  True if `path` is inside Atlas's own on-disk state (log DB, projection
+  DB, chunk CAS). The walker and watcher skip these unconditionally —
+  otherwise pointing Atlas at a parent directory that contains its own
+  `priv/data/store/` triggers a feedback loop: each CAS write creates a
+  temp file, the watcher fires, the indexer re-enters the CAS, rinse.
+
+  In dev, `Atlas.data_dir/0` resolves via `:code.priv_dir(:atlas)` which
+  points at `_build/<env>/lib/atlas/priv/data` — a symlink to the real
+  `apps/atlas/priv/data`. FSEvents delivers paths with the symlink
+  resolved, so the check must consider both the symlinked and realpath
+  variants. `internal_path_prefixes/0` returns the deduped list.
+  """
+  @spec internal_path?(Path.t()) :: boolean()
+  def internal_path?(path) when is_binary(path) do
+    Enum.any?(internal_path_prefixes(), fn prefix ->
+      path == prefix or String.starts_with?(path, prefix <> "/")
+    end)
+  rescue
+    _ -> false
+  end
+
+  @doc """
+  Every prefix that should be considered "Atlas-internal" — the data dir
+  as-configured plus its realpath form (deref'd through any symlink
+  chain). In prod these usually collapse to one entry.
+  """
+  @spec internal_path_prefixes() :: [Path.t()]
+  def internal_path_prefixes do
+    data = data_dir()
+    resolved = realpath(data)
+
+    [data, resolved]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  # Best-effort realpath: walk components from root, following any
+  # symlinks encountered. Iterates to a fixed point so cascaded symlinks
+  # resolve fully. Returns `nil` if the path doesn't exist.
+  defp realpath(path) when is_binary(path) do
+    expanded = Path.expand(path)
+
+    case resolve(expanded) do
+      ^expanded -> expanded
+      other -> realpath(other)
+    end
+  rescue
+    _ -> path
+  end
+
+  defp realpath(_), do: nil
+
+  defp resolve(path) do
+    path
+    |> Path.split()
+    |> Enum.reduce("", fn seg, acc ->
+      candidate =
+        case {acc, seg} do
+          {"", "/"} -> "/"
+          {"", seg} -> seg
+          {acc, seg} -> Path.join(acc, seg)
+        end
+
+      case :file.read_link(String.to_charlist(candidate)) do
+        {:ok, target} ->
+          target_str = IO.chardata_to_string(target)
+
+          if Path.type(target_str) == :absolute do
+            target_str
+          else
+            Path.join(Path.dirname(candidate), target_str)
+          end
+
+        _ ->
+          candidate
+      end
+    end)
+  end
 end

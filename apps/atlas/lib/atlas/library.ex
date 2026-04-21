@@ -193,8 +193,22 @@ defmodule Atlas.Library do
   end
 
   defp where_under_location(query, exact, prefix) do
+    # SQLite LIKE treats `_` as a single-char wildcard (and `%` as multi).
+    # Tmp dirs like `xsqfdpys73x0brsy_5qk3c480000gn` and any user path with
+    # an underscore would otherwise leak rows from neighbouring locations
+    # into the result. Escape both wildcards with `\` and declare the
+    # escape char via `ESCAPE '\'` in the fragment.
+    escaped = prefix |> escape_like() |> Kernel.<>("%")
+
     from f in query,
-      where: f.path == ^exact or like(f.path, ^(prefix <> "%"))
+      where: f.path == ^exact or fragment("? LIKE ? ESCAPE '\\'", f.path, ^escaped)
+  end
+
+  defp escape_like(str) do
+    str
+    |> String.replace("\\", "\\\\")
+    |> String.replace("_", "\\_")
+    |> String.replace("%", "\\%")
   end
 
   # Sort + cursor predicates. The `<`/`>` direction follows `order`.

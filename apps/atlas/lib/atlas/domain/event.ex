@@ -192,6 +192,31 @@ defmodule Atlas.Domain.Event do
           }
   end
 
+  defmodule LocationModeSet do
+    @moduledoc """
+    Sets the indexing mode for a location.
+
+      * `:shallow` — sampled content hash, no CAS writes. Cheap; default.
+      * `:content` — full FastCDC chunking + CAS writes. Needed for future
+        P2P sync and content-addressed extensions.
+
+    Mode changes take effect from the next indexer event onward. Flipping
+    a shallow location to content does not retroactively re-chunk its
+    existing files; trigger a rescan to regenerate full chunks.
+    """
+    @enforce_keys [:v, :at, :path, :mode]
+    defstruct [:v, :at, :path, :mode]
+
+    @type mode :: :shallow | :content
+
+    @type t :: %__MODULE__{
+            v: pos_integer(),
+            at: integer(),
+            path: String.t(),
+            mode: mode()
+          }
+  end
+
   @type t ::
           FileIndexed.t()
           | FileModified.t()
@@ -203,6 +228,7 @@ defmodule Atlas.Domain.Event do
           | LocationScanCompleted.t()
           | LocationScanProgress.t()
           | LocationIgnoreSet.t()
+          | LocationModeSet.t()
 
   @doc "Current wall-clock timestamp in microseconds."
   @spec now_us() :: integer()
