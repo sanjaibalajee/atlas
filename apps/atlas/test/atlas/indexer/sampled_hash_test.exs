@@ -54,7 +54,8 @@ defmodule Atlas.Indexer.SampledHashTest do
       {:ok, h0} = SampledHash.hash_file(path, size)
 
       # Flip a byte near the head. Head is part of the sampled region.
-      mutated = :binary.replace(original, binary_part(original, 100, 1), <<0xAA>>)
+      <<prefix::binary-size(100), byte, suffix::binary>> = original
+      mutated = <<prefix::binary, Bitwise.bxor(byte, 0xFF), suffix::binary>>
       File.write!(path, mutated)
       {:ok, h1} = SampledHash.hash_file(path, size)
 
